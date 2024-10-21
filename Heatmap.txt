@@ -1,0 +1,133 @@
+# Load necessary libraries
+library(readxl)
+library(vegan)
+library(tidyverse)
+library(reshape2)  # For melting the correlation matrix
+library(ggplot2)
+library(cowplot)  # For arranging plots with a shared legend
+library(patchwork)
+
+# Load each condition's data
+acidothermolytic_data <- read_excel("sup 1", sheet = "Acidothermolytic")
+thermolytic_data <- read_excel("sup 1", sheet = "Thermolytic")
+acidic_data <- read_excel"sup 1", sheet = "Acidic")
+normal_data <- read_excel"sup 1", sheet = "Normal")
+
+# Load environmental parameters
+env_factors <- read_excel("sup 1", sheet = "Parameters")
+
+# Combine all condition data into one data frame, including Site and Condition
+combined_data <- bind_rows(
+  acidothermolytic_data %>% mutate(Condition = "Acidothermolytic"),
+  thermolytic_data %>% mutate(Condition = "Thermolytic"),
+  acidic_data %>% mutate(Condition = "Acidic"),
+  normal_data %>% mutate(Condition = "Normal")
+)
+
+# Replace NA with 0 in the combined species data
+combined_data_clean <- combined_data
+combined_data_clean[is.na(combined_data_clean)] <- 0
+
+# Log normalization function
+log_normalize <- function(df, pseudocount = 1) {
+  df[, sapply(df, is.numeric)] <- apply(df[, sapply(df, is.numeric)], 2, function(x) log(x + pseudocount))
+  return(df)
+}
+
+# Apply log normalization to species data
+combined_data_clean <- log_normalize(combined_data_clean)
+
+# Standardization for environmental parameters
+standardize <- function(df) {
+  df[, sapply(df, is.numeric)] <- scale(df[, sapply(df, is.numeric)])
+  return(df)
+}
+
+# Ensure environmental parameters are numeric and remove constant columns
+env_factors_numeric <- env_factors %>%
+  select(where(is.numeric)) %>%
+  select(where(~ sd(.) != 0))  # Remove columns with zero variance
+
+# Get a list of all species (columns) across all conditions
+all_species <- colnames(combined_data_clean)[!(colnames(combined_data_clean) %in% c("Site", "Condition"))]
+
+# Function to create a correlation heatmap for each condition
+plot_correlation_heatmap <- function(condition_name) {
+  
+  # Filter data for the specific condition
+  condition_data <- combined_data_clean %>% filter(Condition == condition_name)
+  
+  # Separate species data and ensure numeric data only, including all species
+  species_data_cond <- condition_data %>%
+    select(all_of(all_species)) %>%
+    mutate_all(as.numeric)  # Ensure all columns are numeric
+  
+  # Compute correlation between species data and numeric environmental parameters
+  correlation_matrix <- cor(species_data_cond, env_factors_numeric, use = "pairwise.complete.obs")
+  
+  # Melt the correlation matrix into a long format
+  melted_correlation_matrix <- melt(correlation_matrix)
+  
+  # Replace NA values with a value indicating absence of species
+  melted_correlation_matrix$value[is.na(melted_correlation_matrix$value)] <- NA  # Keep NA for "Not Present"
+  
+  # Order Var1 (species) and Var2 (environmental parameters) alphabetically
+  melted_correlation_matrix$Var1 <- factor(melted_correlation_matrix$Var1, levels = sort(all_species))
+  melted_correlation_matrix$Var2 <- factor(melted_correlation_matrix$Var2, levels = sort(levels(melted_correlation_matrix$Var2)))
+  
+  # Create the heatmap with environmental parameters on y-axis and species on x-axis
+  p <- ggplot(melted_correlation_matrix, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile(color = "white") +  # Draw tiles with a white border
+    scale_fill_gradientn(
+      colors = c("#fce725", "#61c49e", "#440154"),  # Hex codes for -1, 0, 1
+      limits = c(-1, 1),   # Set limits for the gradient scale
+      na.value = "#BEBEBE",  # Hex code for "Not Present"
+      name = "Correlation"
+    ) +
+    geom_text(aes(label = ifelse(value < -0.94 | value > 0.94, round(value, 2), "")), 
+              size = 3, 
+              color = ifelse(melted_correlation_matrix$value < 0, "black", "white"),  # Conditional text color
+              fontface = "bold") +  # Make text bold
+    theme_minimal() +  # Minimal theme
+    theme(
+      axis.text.x = element_text(angle = 45, vjust = 1, size = 14, hjust = 1, family = "Times New Roman", face = "bold", margin = margin(t = 0, r = 0, b = 0, l = 0)),  # Adjust x-axis text
+      axis.text.y = element_text(size = 14, family = "Times New Roman", face = "bold", margin = margin(t = 0, r = 0, b = 0, l = 0)),  # Adjust y-axis text
+      axis.title = element_text(size = 16, family = "Times New Roman", face = "bold"),  # Axis title font
+      plot.title = element_text(size = 16, family = "Times New Roman", face = "bold"),  # Plot title
+      plot.margin = unit(c(0, 0, 0, 0), "cm"),  # Remove plot margins
+      panel.spacing = unit(0, "cm"),  # Remove gaps between panels
+      legend.position = "right"  # Add the legend on the right side
+    ) +
+    labs(title = paste("", condition_name),
+         x = "Genera",
+         y = "Environmental Parameters")
+  
+  return(p)
+}
+
+# Generate the heatmaps for each condition
+p_normal <- plot_correlation_heatmap("Normal")
+p_acidic <- plot_correlation_heatmap("Acidic")
+p_thermolytic <- plot_correlation_heatmap("Thermolytic")
+p_acidothermolytic <- plot_correlation_heatmap("Acidothermolytic")
+
+# Combine the plots using patchwork::plot_layout() for better control over spacing
+combined_plot <- (p_normal | p_acidic) / (p_thermolytic | p_acidothermolytic)
+
+# Optionally adjust space between rows and columns, add the correlation legend
+combined_plot <- combined_plot + 
+  plot_layout(
+    widths = c(1, 1),  # Adjust relative widths if needed
+    heights = c(1, 1),  # Adjust relative heights if needed
+    guides = "collect"  # Ensure that the guides (legends) are collected properly
+  ) & 
+  theme(
+    plot.margin = unit(c(0, 0, 0, 0), "cm"),  # Final margin adjustment
+    legend.position = "right"  # Place the gradient legend on the right side
+  )
+
+# Print the final combined plot
+print(combined_plot)
+
+# Save the final combined plot as a high-resolution image (300 dpi)
+ggsave("Combined_Correlation_Heatmaps_With_Legend.png", plot = combined_plot, dpi = 300, width = 16, height = 12)

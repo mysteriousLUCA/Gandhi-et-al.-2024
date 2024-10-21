@@ -1,0 +1,133 @@
+# Load necessary libraries
+library(vegan)
+library(ggplot2)
+library(readxl)
+library(plotly)
+library(dplyr)
+library(webshot2)  # To capture screenshots
+
+# Load the beta diversity data and parameters
+file_path <- "sup.xslx"
+
+# Load data from the Excel file
+data <- read_excel(file_path, sheet = "Diversity")
+parameters <- read_excel(file_path, sheet = "Parameters")
+
+# Ensure 'Group' column is present or create it
+if (!"Group" %in% colnames(data)) {
+  data$Group <- ifelse(grepl("D[1-3]", data$Site), "Dead", "Alive")
+}
+
+# Log Normalization for species data
+log_normalize <- function(df, pseudocount = 1) {
+  df[, sapply(df, is.numeric)] <- log1p(df[, sapply(df, is.numeric)] + pseudocount - 1)
+  return(df)
+}
+
+# Apply log normalization to the species data
+species_data <- data %>% select(-Site, -Group)
+species_data <- log_normalize(species_data)
+
+# Standardization for environmental parameters
+standardize <- function(df) {
+  df[, sapply(df, is.numeric)] <- scale(df[, sapply(df, is.numeric)])
+  return(df)
+}
+
+# Apply standardization to the parameters data
+parameters <- standardize(parameters)
+
+# Compute Bray-Curtis dissimilarity matrix
+dist_matrix <- vegdist(as.matrix(species_data), method = "bray")
+
+# Perform PCoA
+pcoa_result <- cmdscale(dist_matrix, k = 3, eig = TRUE)
+pcoa_scores <- as.data.frame(pcoa_result$points)
+colnames(pcoa_scores) <- c("PCoA1", "PCoA2", "PCoA3")
+pcoa_scores$Group <- data$Group
+pcoa_scores$Site <- data$Site
+
+# Function to create 3D PCoA plot with bold axis titles
+create_total_pcoa_3d_plot <- function(pcoa_scores, pcoa_result) {
+  scores <- pcoa_scores
+  scores$Group <- factor(scores$Group, levels = c("Alive", "Dead"))
+  
+  centroids <- scores %>%
+    group_by(Group) %>%
+    summarize(PCoA1 = mean(PCoA1), PCoA2 = mean(PCoA2), PCoA3 = mean(PCoA3))
+  
+  eigenvalues <- pcoa_result$eig
+  variance_percent <- round(100 * eigenvalues / sum(eigenvalues), 2)
+  
+  plot <- plot_ly(scores, x = ~PCoA1, y = ~PCoA2, z = ~PCoA3, color = ~Group, 
+                  colors = c("red", "blue"), text = ~Site, hoverinfo = "text") %>%
+    add_markers() %>%
+    add_text(text = ~Site, showlegend = FALSE, textfont = list(size = 20)) %>%
+    layout(
+      scene = list(
+        xaxis = list(
+          title = list(text = paste0('PCoA1 (', variance_percent[1], '%)'), font = list(size = 20, family = "Arial", color = "black", bold = TRUE)),
+          showgrid = FALSE
+        ),
+        yaxis = list(
+          title = list(text = paste0('PCoA2 (', variance_percent[2], '%)'), font = list(size = 20, family = "Arial", color = "black", bold = TRUE)),
+          showgrid = FALSE
+        ),
+        zaxis = list(
+          title = list(text = paste0('PCoA3 (', variance_percent[3], '%)'), font = list(size = 20, family = "Arial", color = "black", bold = TRUE)),
+          showgrid = FALSE
+        )
+      ),
+      title = "3D PCoA Plot for Beta Diversity with Site Names and Group Labels",
+      
+      # Legend styling
+      legend = list(
+        orientation = "v",         # Vertical legend
+        x = 1,                     # Position it on the right side of the plot
+        y = 0.5,                   # Vertically center the legend
+        xanchor = "left",          # Anchor legend on the left side
+        yanchor = "middle"         # Vertically center the legend
+      )
+    )
+
+  plot <- plot %>%
+    add_markers(data = centroids %>% filter(Group == "Alive"), 
+                x = ~PCoA1, y = ~PCoA2, z = ~PCoA3, 
+                color = I("green"), symbol = I("square"), size = I(20), 
+                marker = list(size = 20), text = ~Group, hoverinfo = "text", name = "Alive Centroid") %>%
+    add_markers(data = centroids %>% filter(Group == "Dead"), 
+                x = ~PCoA1, y = ~PCoA2, z = ~PCoA3, 
+                color = I("purple"), symbol = I("square"), size = I(20), 
+                marker = list(size = 20), text = ~Group, hoverinfo = "text", name = "Dead Centroid")
+
+  return(plot)
+}
+
+# Create 3D plot
+pcoa_plot <- create_total_pcoa_3d_plot(pcoa_scores, pcoa_result)
+
+# Save the 3D plot as an HTML file first to use with webshot
+html_file <- "pcoa_plot.html"
+htmlwidgets::saveWidget(pcoa_plot, html_file)
+
+# Define different camera angles
+camera_angles <- list(
+  list(eye = list(x = 1.5, y = 1.5, z = 1.5)), # Angle 1
+  list(eye = list(x = -1.5, y = 1.5, z = 1.5)), # Angle 2
+  list(eye = list(x = 1.5, y = -1.5, z = 1.5)), # Angle 3
+  list(eye = list(x = 1.5, y = 1.5, z = -1.5)), # Angle 4
+  list(eye = list(x = -1.5, y = -1.5, z = -1.5)) # Angle 5
+)
+
+# Loop through the camera angles to capture screenshots
+for (i in 1:length(camera_angles)) {
+  plot_snapshot <- pcoa_plot %>%
+    layout(scene = list(camera = camera_angles[[i]])) # Apply camera angle
+  
+  # Save the updated plot with the new camera angle as an HTML file
+  temp_html_file <- paste0("pcoa_plot_angle_", i, ".html")
+  htmlwidgets::saveWidget(plot_snapshot, temp_html_file)
+
+  # Take a screenshot of the plot and save it as PNG
+  webshot(temp_html_file, file = paste0("pcoa_snapshot_angle_", i, ".png"), vwidth = 1200, vheight = 1200, zoom = 3)
+}

@@ -1,0 +1,36 @@
+library(readxl)
+library(ggplot2)
+library(reshape2)
+library(dplyr) # For data manipulation
+file_path <- "sup 2", sheet = “(C N, C A, C T, C AT)/ (L N, L A, L AT)/ (X N, X A, X T, X AT)/ (XI N, XI A, XI T, XI AT)”
+combined_data <- bind_rows(xi_data, xylanase_data, cellulase_data, laccase_data)
+data_melted <- melt(combined_data, id.vars = c("Location", "Enzyme", "Condition"),
+variable.name = "Measurement", value.name = "Value")
+data_melted$Enzyme_Condition <- paste(data_melted$Condition, data_melted$Enzyme, sep = " - ")
+data_melted$Location <- factor(data_melted$Location,
+levels = c("M 1", "M 2", "M 3", "M 4", "M 5",
+"M 6", "M 7", "M 8", "M 9", "M 10",
+"D 1", "D 2", "D 3"))
+condition_order <- c("Normal - XI", "Normal - Xylanase", "Normal - Cellulase", "Normal - Laccase",
+"Acidic - XI", "Acidic - Xylanase", "Acidic - Cellulase", "Acidic - Laccase",
+"Thermal - XI", "Thermal - Xylanase", "Thermal - Cellulase", "Thermal - Laccase",
+"Thermoacidic - XI", "Thermoacidic - Xylanase", "Thermoacidic - Cellulase", "Thermoacidic - Laccase")
+data_melted$Enzyme_Condition <- factor(data_melted$Enzyme_Condition,
+levels = condition_order)
+text_color <- function(fill) {
+ifelse(fill >= 15, "white", "black")
+}
+data_melted$text_color <- text_color(data_melted$Value)
+heatmap_plot <- ggplot(data_melted, aes(x = Enzyme_Condition, y = Location, fill = Value)) +
+geom_tile(color = "white") +
+geom_text(aes(label = Value, color = text_color), size = 3, family = "serif") +
+scale_fill_gradient2(low = "#fefed9", mid = "#a2dbb8", high = "#243e98",
+midpoint = max(data_melted$Value) / 2, na.value = "grey50") +
+scale_color_identity() +
+labs(x = "Enzyme and Condition", y = "Location", fill = "Number of Positive Isolates") +
+theme_minimal(base_family = "serif") +
+theme(axis.text.x = element_text(angle = 45, hjust = 1, family = "serif"),
+axis.text.y = element_text(family = "serif"),
+axis.title.x = element_text(family = "serif"),
+axis.title.y = element_text(family = "serif"))
+ggsave("heatmap_plot.png", plot = heatmap_plot, dpi = 600, width = 12, height = 8)

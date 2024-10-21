@@ -1,0 +1,278 @@
+For taxonomic distance
+
+# Load necessary packages
+library(taxize)
+library(readxl)
+library(writexl)
+
+# Read the genus data
+genus_data <- read_excel("D:/Education/NIO Lab/Paper 1/Final/Just genus.xlsx")
+genus_names <- genus_data$Genus  # Assuming the genus names are in a column named "Genus"
+
+# Get taxonomic information for each genus
+tax_info <- classification(genus_names, db = "ncbi", verbose = TRUE)
+
+# Modify the extraction of taxonomic ranks to handle missing data
+tax_ranks <- sapply(tax_info, function(x) {
+  if (is.data.frame(x)) {  # Check if the returned object is a data frame
+    # Extract family, order, and class if available
+    ranks <- c(
+      family = ifelse("family" %in% x$rank, x$name[x$rank == "family"], NA),
+      order = ifelse("order" %in% x$rank, x$name[x$rank == "order"], NA),
+      class = ifelse("class" %in% x$rank, x$name[x$rank == "class"], NA)
+    )
+  } else {
+    # If the taxon wasn't found, return NA for all ranks
+    ranks <- c(family = NA, order = NA, class = NA)
+  }
+  return(ranks)
+})
+
+# Convert to a data frame
+tax_ranks <- t(tax_ranks)
+
+# Preview the result
+print(tax_ranks)
+
+
+# Define a simple distance function based on taxonomic rank differences
+calculate_taxonomic_distance <- function(tax_ranks) {
+  n <- nrow(tax_ranks)
+  dist_matrix <- matrix(0, n, n)
+  rownames(dist_matrix) <- colnames(dist_matrix) <- rownames(tax_ranks)
+  
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      # Count the number of different ranks (family, order, class)
+      diff_count <- sum(tax_ranks[i, ] != tax_ranks[j, ], na.rm = TRUE)
+      dist_matrix[i, j] <- dist_matrix[j, i] <- diff_count
+    }
+  }
+  return(dist_matrix)
+}
+
+# Calculate the distance matrix based on taxonomic ranks
+distance_matrix <- calculate_taxonomic_distance(tax_ranks)
+
+# Export the taxonomic distance matrix to Excel
+write_xlsx(as.data.frame(distance_matrix), "taxonomic_distances.xlsx")
+
+nMDS
+
+# Load necessary libraries
+library(vegan)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(readxl)
+library(htmlwidgets)
+library(webshot2)
+
+# Load and process the phylogenetic distance matrix
+phylo_distance_matrix <- read_excel("D:/Education/NIO Lab/Paper 1/Final/Test 14/taxonomic_distances.xlsx")
+phylo_distance_matrix <- as.matrix(phylo_distance_matrix)
+rownames(phylo_distance_matrix) <- colnames(phylo_distance_matrix) <- genus_names
+
+# Load the Xylanase data
+file_path <- “sup 2”, sheet = "(C N, C A, C T, C AT)/ (L N, L A, L AT)/ (X N, X A, X T, X AT)/ (XI N, XI A, XI T, XI AT)"
+data_list <- lapply(excel_sheets(file_path), function(sheet) read_excel(file_path, sheet = sheet))
+parameters <- data_list[[length(data_list)]]  # Environmental parameters
+conditions <- data_list[1:(length(data_list) - 1)]  # Species data
+
+# Log Normalization for species data
+log_normalize <- function(df, pseudocount = 1) {
+    df[, sapply(df, is.numeric)] <- apply(df[, sapply(df, is.numeric)], 2, function(x) log(x + pseudocount))
+    return(df)
+}
+
+# Standardization for environmental parameters
+standardize <- function(df) {
+    df[, sapply(df, is.numeric)] <- scale(df[, sapply(df, is.numeric)])
+    return(df)
+}
+
+# Normalize species data and standardize environmental parameters
+conditions_normalized <- lapply(conditions, function(df) {
+    df[, -1] <- log_normalize(df[, -1])  # Exclude the 'Site' column
+    df
+})
+parameters_normalized <- standardize(parameters)
+
+# Define groupings for each condition
+condition_names <- c("Normal", "Acidic", "Thermolytic", "Acidothermolytic")
+groupings <- lapply(seq_along(condition_names), function(i) {
+    ifelse(grepl("D[1-3]", conditions_normalized[[i]]$Site), "Dead", "Alive")
+})
+names(groupings) <- condition_names
+
+# nMDS analysis for each condition (3D nMDS)
+nmds_results_list <- lapply(conditions_normalized, function(condition_data) {
+    species_data <- as.matrix(condition_data[, -1])
+    sites_in_condition <- condition_data$Site
+    
+    # Genus (species) nmds - Jaccard distance
+    dist_matrix_genus <- vegdist(species_data, method = "jaccard")
+    nmds_result_genus <- cmdscale(dist_matrix_genus, k = 3, eig = TRUE)  # 3D nMDS using cmdscale
+    
+    # Extract nMDS site scores
+    scores_genus <- as.data.frame(nmds_result_genus$points)
+    colnames(scores_genus) <- c("NMDS1", "NMDS2", "NMDS3")
+    scores_genus$Site <- sites_in_condition
+    
+    list(
+        scores_genus = scores_genus,
+        dist_matrix_genus = dist_matrix_genus,
+        nmds_result_genus = nmds_result_genus,
+        stress = nmds_result_genus$GOF  # Goodness of fit for cmdscale
+    )
+})
+
+# Environmental parameter nMDS analysis (Euclidean distance)
+env_data_numeric <- parameters_normalized %>% select_if(is.numeric)
+dist_matrix_env <- vegdist(env_data_numeric, method = "euclidean")
+nmds_result_env <- cmdscale(dist_matrix_env, k = 3, eig = TRUE)
+
+# Calculate approximate variance percentages for nMDS
+variance_explained <- function(nmds_result) {
+    eig_vals <- nmds_result$eig
+    variance_percent <- sum(eig_vals[1:3]) / sum(abs(eig_vals)) * 100  # Approximation based on eigenvalues
+    return(variance_percent)
+}
+
+# Create combined dataset and calculate centroids
+combined_scores_nmds <- bind_rows(lapply(seq_along(condition_names), function(i) {
+    scores <- nmds_results_list[[i]]$scores_genus
+    scores$Condition <- condition_names[i]
+    scores$Group <- groupings[[i]]
+    return(scores)
+}))
+
+centroids_nmds <- combined_scores_nmds %>% 
+    group_by(Condition, Group) %>% 
+    summarize(
+        Centroid_NMDS1 = mean(NMDS1, na.rm = TRUE),
+        Centroid_NMDS2 = mean(NMDS2, na.rm = TRUE),
+        Centroid_NMDS3 = mean(NMDS3, na.rm = TRUE)
+    )
+
+# 3D Plotting nMDS results using plotly with customized colors and symbols
+plotly_nmds <- plot_ly()
+
+# Define colors for conditions
+condition_colors <- c("Normal" = "blue", "Acidic" = "green", "Thermolytic" = "purple", "Acidothermolytic" = "red")
+
+# Define symbols for groups and centroids
+symbols <- list(
+    "Dead" = "circle",
+    "Alive" = "cross",          
+    "Centroid_Dead" = "diamond",
+    "Centroid_Alive" = "square"
+)
+
+# Add points for each condition and group in plotly
+for (condition in condition_names) {
+    for (group in c("Dead", "Alive")) {
+        subset_data <- combined_scores_nmds %>% filter(Condition == condition & Group == group)
+        subset_centroid <- centroids_nmds %>% filter(Condition == condition & Group == group)
+        
+        # Set symbols for sites and centroids
+        symbol <- symbols[[group]]
+        centroid_symbol <- symbols[[paste0("Centroid_", group)]]
+        
+        # Add points for sites
+        plotly_nmds <- plotly_nmds %>%
+            add_trace(
+                x = subset_data$NMDS1, y = subset_data$NMDS2, z = subset_data$NMDS3,
+                type = 'scatter3d', mode = 'markers',
+                marker = list(size = 10, symbol = symbol, color = condition_colors[condition]),
+                name = paste(condition, group)
+            ) %>%
+            # Add centroids
+            add_trace(
+                x = subset_centroid$Centroid_NMDS1, y = subset_centroid$Centroid_NMDS2, z = subset_centroid$Centroid_NMDS3,
+                type = 'scatter3d', mode = 'markers',
+                marker = list(size = 10, symbol = centroid_symbol, color = condition_colors[condition]),
+                name = paste("Centroid", condition, group)
+            )
+    }
+}
+
+# Axis labels with variance percentages (approximated)
+variance_percentages <- variance_explained(nmds_results_list[[1]]$nmds_result_genus)
+
+plotly_nmds <- plotly_nmds %>%
+    layout(
+        title = "XI",
+        scene = list(
+            xaxis = list(title = paste0('NMDS1 (', round(variance_percentages/3, 2), '%)'), titlefont = list(size = 14, family = "Arial", color = "black", bold = TRUE), showgrid = FALSE),
+            yaxis = list(title = paste0('NMDS2 (', round(variance_percentages/3, 2), '%)'), titlefont = list(size = 14, family = "Arial", color = "black", bold = TRUE), showgrid = FALSE),
+            zaxis = list(title = paste0('NMDS3 (', round(variance_percentages/3, 2), '%)'), titlefont = list(size = 14, family = "Arial", color = "black", bold = TRUE), showgrid = FALSE)
+        )
+    )
+
+# Show 3D plotly plot
+plotly_nmds
+
+# Save the 3D plot as an HTML file to use with webshot
+html_file <- "plot_with_vectors.html"
+htmlwidgets::saveWidget(plotly_nmds, html_file)
+
+# Define different camera angles
+camera_angles <- list(
+  list(eye = list(x = 2.5, y = 2.5, z = 1.5)),  # Angle 1
+  list(eye = list(x = -2.5, y = 2.5, z = 1.5)), # Angle 2
+  list(eye = list(x = 2.5, y = -2.5, z = 1.5)), # Angle 3
+  list(eye = list(x = 2.5, y = 2.5, z = -1.5)), # Angle 4
+  list(eye = list(x = -2.5, y = -2.5, z = -1.5)) # Angle 5
+)
+
+# Loop through the camera angles to capture screenshots
+for (i in 1:length(camera_angles)) {
+  plot_snapshot <- plotly_nmds %>%
+    layout(scene = list(camera = camera_angles[[i]]))  # Apply camera angle
+  
+  # Save the updated plot with the new camera angle as an HTML file
+  temp_html_file <- paste0("pcoa_plot_angle_", i, ".html")
+  htmlwidgets::saveWidget(plot_snapshot, temp_html_file)
+  
+  # Take a screenshot of the plot and save it as PNG
+  webshot(temp_html_file, file = paste0("pcoa_snapshot_angle_", i, ".png"), vwidth = 1200, vheight = 1200, zoom = 3)
+}
+
+# Perform PERMANOVA and betadisper (homogeneity of dispersion) analysis
+perform_permanova_and_betadisper <- function(dist_matrix, grouping, sheet_name) {
+  # PERMANOVA
+  permanova_result <- adonis2(dist_matrix ~ grouping, permutations = 999)
+  cat(paste("PERMANOVA for", sheet_name, ":\n"))
+  print(permanova_result)
+  
+  # Homogeneity of dispersion (betadisper)
+  betadisper_result <- betadisper(dist_matrix, grouping)
+  cat(paste("\nHomogeneity of Dispersion for", sheet_name, ":\n"))
+  print(anova(betadisper_result))
+}
+
+# Perform PERMANOVA and betadisper for each condition
+mapply(function(i, condition) {
+  dist_matrix <- nmds_results_list[[i]]$dist_matrix_genus
+  grouping <- groupings[[i]]
+  perform_permanova_and_betadisper(dist_matrix, grouping, condition)
+}, seq_along(condition_names), condition_names)
+
+# Fit environmental data to the nMDS solution using envfit
+envfit_results <- lapply(seq_along(nmds_results_list), function(i) {
+  condition <- condition_names[i]
+  nmds_result <- nmds_results_list[[i]]$nmds_result_genus
+  
+  # Subset environmental data based on the sites in the condition
+  env_data <- parameters_normalized[parameters$Site %in% conditions_normalized[[i]]$Site, ]
+  env_data_numeric <- env_data[, sapply(env_data, is.numeric)]
+  
+  # Perform envfit
+  fit <- envfit(nmds_result, env_data_numeric, permutations = 999)
+  
+  cat(paste("Environmental fitting for", condition, ":\n"))
+  print(fit)
+  
+  return(fit)
+})

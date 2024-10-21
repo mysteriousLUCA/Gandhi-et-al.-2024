@@ -1,0 +1,46 @@
+# Load necessary libraries
+library(readxl)
+library(ggplot2)
+library(reshape2)
+library(scales)
+library(plotly)
+
+# Define file path and read the Excel data
+file_path <- file_path, sheet = "Diversity"
+data <- read_excel(file_path)
+
+# Melt the data for ggplot2
+melted_data <- melt(data, id.vars = "Sampling sites", 
+                    variable.name = "Genus", value.name = "Count")
+
+# Replace zero counts with NA (so they will be gray)
+melted_data$Count_with_NA <- ifelse(melted_data$Count == 0, NA, melted_data$Count)
+
+# Factor the 'Sampling sites' to control the order
+melted_data$`Sampling sites` <- factor(melted_data$`Sampling sites`, 
+                                       levels = c("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "D1", "D2", "D3"))
+
+# Define the heatmap plot with square tiles, custom gradient, and conditional text color
+heatmap <- ggplot(melted_data, aes(x = Genus, y = `Sampling sites`, fill = Count_with_NA)) +
+  geom_tile(color = "black", width = 1, height = 1) +  # Ensure square tiles
+  geom_text(aes(label = Count, color = ifelse(Count > 8, "white", "black")), family = "Times") +  # Conditionally color text
+  scale_color_identity() +  # Use actual color names in geom_text
+  scale_fill_gradientn(
+    colors = c("#efe51a", "#36b976", "#287a8e", "#46196a"),  # Custom gradient colors for values 1-16
+    values = scales::rescale(c(1, 5, 10, 16)),  # Ensure gradient starts at 1 and ends at 16
+    na.value = "gray"  # Explicitly map NA (representing zero) to gray
+  ) +
+  coord_fixed(ratio = 1) +  # Ensure square aspect ratio
+  theme_minimal(base_family = "Times") +  # Set font to Times New Roman
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, face = "bold"),  # Rotate and bold x-axis labels
+    axis.text.y = element_text(face = "bold"),  # Bold y-axis labels
+    axis.title.x = element_text(face = "bold"),  # Bold x-axis title
+    axis.title.y = element_text(face = "bold"),  # Bold y-axis title
+    text = element_text(family = "Times"),  # Set all text to Times New Roman
+    panel.grid = element_blank()  # Remove grid lines
+  ) +
+  labs(x = "Genus", y = "Locations", fill = "Count")  # Label axes and legend
+
+# Save the heatmap as a TIFF file with 300 DPI
+ggsave(filename = "heatmap_output.tiff", plot = heatmap, dpi = 300, width = 10, height = 8, units = "in", device = "tiff")
